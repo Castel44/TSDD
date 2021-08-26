@@ -1,5 +1,0 @@
-#!/bin/bash
-export PYTHONPATH=$PYTHONPATH:${pwd}
-export CUDA_VISIBLE_DEVICES=0
-
-#TODO
