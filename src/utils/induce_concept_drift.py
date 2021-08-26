@@ -3,7 +3,7 @@ import pandas as pd
 import numpy as np
 from sklearn.feature_selection import SelectKBest
 
-from src.utils.dataload_utils import DATAPATH
+from src.utils.global_var import DATAPATH
 
 
 def feature_importance(x, y):
@@ -25,7 +25,7 @@ def get_permutation(x):
     return permuted
 
 
-def induce_drift(x, y, selected_class = 0, t_start=0, t_end=None, p=0.25, features='top', copy=True):
+def induce_drift(x, y, t_start=0, t_end=None, p=0.25, features='top', copy=True):
     """
     t_start : int
         startpoint of drift
@@ -34,8 +34,8 @@ def induce_drift(x, y, selected_class = 0, t_start=0, t_end=None, p=0.25, featur
     p : float or int (default: 0.25)
         percentage of features to flip if float
         number of features to flip if int
-    features : list (default: None)
-        If passed, the feature to flip
+    features : str (default: top)
+        If passed, the feature to flip. top or bottom.
     """
 
     assert t_end == None or t_end > t_start
@@ -68,14 +68,12 @@ def induce_drift(x, y, selected_class = 0, t_start=0, t_end=None, p=0.25, featur
 
     if copy:
         x2 = x.copy()
-        for i in range(t_start,t_end):
-            if y[i] == selected_class:
-                x2[i,:] = x2[i, col_idx]
+        for i in range(t_start, t_end):
+            x2[i, :] = x2[i, col_idx]
         return x2, permute_dict
     else:
-        for i in range(t_start,t_end):
-            if y[i] == selected_class:
-                x[i,:] = x[i, col_idx]
+        for i in range(t_start, t_end):
+            x[i, :] = x[i, col_idx]
         return x, permute_dict
 
 
@@ -107,8 +105,8 @@ def corrupt_drift(x, y=None, t_start=0, t_end=None, p=0.25, features='top', loc=
     else:
         raise ValueError
 
-    scale = np.linspace(0 ,std, transient)
-    #mean = np.linspace(0, loc, transient)
+    scale = np.linspace(0, std, transient)
+    # mean = np.linspace(0, loc, transient)
 
     if copy:
         x2 = x.copy()
@@ -116,18 +114,15 @@ def corrupt_drift(x, y=None, t_start=0, t_end=None, p=0.25, features='top', loc=
             if loc is None:
                 loc = np.random.random(1) * np.random.randint(0, 10)
             x2[t_start:t_end, i] += np.random.normal(loc, scale)
-            x2[t_end:, i] += np.random.normal(loc, std, len(x)-t_end)
+            x2[t_end:, i] += np.random.normal(loc, std, len(x) - t_end)
         return x2, drift_features
     else:
         for i in drift_features:
             if loc is None:
                 loc = np.random.random(1) * np.random.randint(0, 10)
             x[t_start:t_end, i] += np.random.normal(loc, scale)
-            x[t_end:, i] += np.random.normal(loc, std, len(x)-t_end)
+            x[t_end:, i] += np.random.normal(loc, std, len(x) - t_end)
         return x, drift_features
-
-
-
 
 
 if __name__ == '__main__':

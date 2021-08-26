@@ -1,16 +1,13 @@
-from src.utils.drift_detector_meta import BaseDetector, BaseWindowDetector
-import numpy as np
-from scipy.stats import norm
-from scipy.spatial.distance import cdist, pdist
-
-from src.utils.kernel_two_sample_test import kernel_two_sample_test, MMD2u
-from sklearn.metrics import pairwise_distances, pairwise_kernels
-
-from alibi_detect.cd import MMDDrift, ChiSquareDrift, KSDrift, LSDDDrift
+from itertools import accumulate
 
 import matplotlib.pyplot as plt
+import numpy as np
+from alibi_detect.cd import MMDDrift, ChiSquareDrift, KSDrift, LSDDDrift
+from scipy.spatial.distance import cdist
+from scipy.stats import kstest
+from scipy.stats import norm
 
-# TODO: now only single drift works. Do also for multiple. Modify detect function.
+from src.utils.drift_detector_meta import BaseDetector
 
 
 ########################################################################################################################
@@ -66,7 +63,6 @@ class DetectorZScores(BaseDetector):
                 self.idx_warning.append(t)
             if self.detected_change():
                 self.idx_drift.append(t)
-
 
         if saver is not None:
             self.plot_detection(self.p_values, self.alpha, drift_points)
@@ -234,8 +230,6 @@ class DetectorEMA(BaseDetector):
         if not (self.in_concept_change or self.in_warning_zone) and self.dyn_update:
             self.update()
 
-
-
         return self
 
     def detect(self, data, saver=None, drift_points=()):
@@ -346,7 +340,7 @@ class DetectorEmbedding(BaseDetector):
             self.distance.append(distance)
 
             eps = distance - self.dist_old
-            #self.dist_old = distance
+            # self.dist_old = distance
             # self.eps.append(eps)
 
             d = len(self.eps)
@@ -360,13 +354,13 @@ class DetectorEmbedding(BaseDetector):
                 drift = np.abs(eps) > beta
 
                 self.drift_hysteresis(drift)
-                #if not (self.in_concept_change or self.in_warning_zone):
-                #self.hist_baseline += hist
+                # if not (self.in_concept_change or self.in_warning_zone):
+                # self.hist_baseline += hist
                 self.eps.append(eps)
             else:
                 self.eps.append(eps)
-                #self.X_reference = np.vstack((self.X_reference, X))
-                #self.calculate_reference_hist()
+                # self.X_reference = np.vstack((self.X_reference, X))
+                # self.calculate_reference_hist()
 
     def detect(self, data, saver=None, drift_points=()):
         n = len(data)
@@ -402,6 +396,7 @@ class MMDDetector(BaseDetector):
             self.detector_name = name
         else:
             self.detector_name = 'MMD'
+
     def add_element(self, X):
         n = len(X)
         if n < self.min_winsize:
@@ -554,7 +549,6 @@ class KSDetector(BaseDetector):
         self.min_winsize = min_winsize
         self.drift_type = type
 
-
         self.p_vals = []
         if name is not None:
             self.detector_name = name
@@ -595,3 +589,166 @@ class KSDetector(BaseDetector):
         if saver is not None:
             self.plot_detection(self.p_vals, self.alpha, drift_points)
             saver.save_fig(plt.gcf(), f'{self.detector_name}')
+
+
+#################################################################################################
+# IKS on embedding statistical features
+#################################################################################################
+class DriftDetector(object):
+    def __init__(self, data_test, centroids, data_train=None, stattest: str = 'KS', winsize=100, saver=None,
+                 statistic='default', mode='sliding', alpha=0.05):
+
+        avalable_stattest = {'KS': kstest}
+
+        if statistic == 'default':
+            self.data_statistic = {'mean': np.mean,
+                                   'std': np.std,
+                                   'min': np.min,
+                                   'max': np.max}
+        else:
+            self.data_statistic = statistic
+
+        self.f_test = avalable_stattest[stattest]
+        self.test = data_test
+        self.train = data_train
+        self.centroids = centroids
+        self.winsize = winsize
+        self.p_values_dict = dict.fromkeys(self.data_statistic)
+        self.mode = mode
+        self.saver = saver
+        self.alpha = alpha
+
+        self.distances_train = None
+        self.distances_test = None
+        self.statistics_train = None
+        self.statistics_test = None
+
+    @staticmethod
+    def sliding_reference(data, f_test, winsize=100, alpha=0.05, tolerance=5):
+        p_values = np.ones(len(data))
+        for t in range(len(data)):
+            if t < 2 * winsize:
+                continue
+            data_test = data[t - winsize:t]
+            data_reference = data[t - 2 * winsize: t - winsize]
+            p = f_test(data_reference, data_test)[1]
+            p_values[t] = p
+
+        return p_values
+
+    @staticmethod
+    def fixed_reference(data, f_test, data_reference=None, winsize=100, alpha=0.05, tolerance=5):
+        if data_reference is None:
+            data_reference = data[:winsize]
+        p_values = np.ones(len(data))
+        for t in range(len(data)):
+            if t < winsize:
+                continue
+            data_test = data[t - winsize:t]
+            p = f_test(data_reference, data_test)[1]
+            p_values[t] = p
+        return p_values
+
+    def _cdist(self, data):
+        pairwise_distance = cdist(data, self.centroids)
+        return pairwise_distance
+
+    def _compute_statistic(self, data):
+        stat_dict = {key: func(data, axis=1) for key, func in self.data_statistic.items()}
+        return stat_dict
+
+    def detect(self):
+        if self.distances_test is None:
+            self.distances_test = self._cdist(self.test)
+
+        self.statistics_test = self._compute_statistic(self.distances_test)
+
+        for key, value in self.statistics_test.items():
+            print(f'*** Statistic: {key} ***')
+            if self.mode == 'fixed':
+                p_val = self.fixed_reference(value, self.f_test, winsize=self.winsize)
+            elif self.mode == 'sliding':
+                p_val = self.sliding_reference(value, self.f_test, winsize=self.winsize)
+            else:
+                raise NotImplementedError
+            self.p_values_dict[key] = p_val
+        return self
+
+    def correct_alpha(self, correction='sidak'):
+        if self.p_values_dict.get(list(self.p_values_dict.keys())[0]) is None:
+            self.detect()
+
+        m = len(self.p_values_dict.keys())
+        if correction == 'bonferroni':
+            alpha_ = self.alpha / m
+        elif correction == 'sidak':
+            alpha_ = 1 - (1 - self.alpha) ** (1 / m)
+        alpha_corrected = 1 - (1 - alpha_) ** m
+        return alpha_corrected
+
+    def plot_train_test_statistic(self, drift_points=()):
+        if self.distances_test is None:
+            self.distances_test = self._cdist(self.test)
+        if self.distances_train is None:
+            self.distances_train = self._cdist(self.train)
+        if self.statistics_train is None:
+            self.statistics_train = self._compute_statistic(self.distances_train)
+        if self.statistics_test is None:
+            self.statistics_test = self._compute_statistic(self.distances_test)
+
+        plt.figure()
+        for key, value in self.statistics_train.items():
+            train_samples = value.shape[0]
+            plt.plot([x for x in range(train_samples)], value, label='Train {} distance'.format(key))
+        for key, value in self.statistics_test.items():
+            plt.plot([x for x in range(train_samples, train_samples + value.shape[0])], value,
+                     label='Test {} distance'.format(key))
+            for t in drift_points:
+                plt.axvline(train_samples + t, linestyle='-.', c='blue')
+        plt.legend()
+        self.saver.save_fig(plt.gcf(), 'Drift_statistics')
+
+    def plot_drift_detection(self, drift_points=()):
+        fig, axes = plt.subplots(len(self.p_values_dict.keys()), 1, sharex='all')
+        for ax, key, value in zip(axes, self.p_values_dict.keys(), self.p_values_dict.values()):
+            n = len(self.p_values_dict[key])
+            ax.plot([x for x in range(n)], self.p_values_dict[key])
+            ax.axhline(self.alpha, linestyle='--', c='red')
+            ax.set_title(f'Statistic: {key} ({self.winsize=})')
+            for t in drift_points:
+                ax.axvline(t, linestyle='-.', c='blue')
+
+            # Visualize drift points
+            drift = np.array(value < 0.05)
+            ax.plot(np.argwhere(drift), value[drift], linestyle='None', marker='o', alpha=0.33)
+
+            acc = np.array(list(accumulate(drift.astype(int), lambda x, y: x + y if y else 0)))
+            ax.plot(np.argwhere(acc > 3), value[acc > 3], linestyle='None', marker='x', color='red', alpha=0.5)
+
+        fig.tight_layout()
+        self.saver.save_fig(plt.gcf(), 'drift_detection')
+
+        p_tot = np.array(list(self.p_values_dict.values())).mean(axis=0)
+        alpha_corrected = self.correct_alpha(correction='sidak')
+        n = len(p_tot)
+        plt.figure()
+        plt.plot([x for x in range(n)], p_tot)
+        plt.axhline(alpha_corrected, linestyle='--', c='red')
+        for t in drift_points:
+            plt.axvline(t, linestyle='-.', c='blue')
+
+        # Visualize drift points
+        drift = np.array(p_tot < alpha_corrected)
+        plt.plot(np.argwhere(drift), p_tot[drift], linestyle='None', marker='o', alpha=0.33)
+
+        acc = np.array(list(accumulate(drift.astype(int), lambda x, y: x + y if y else 0)))
+        plt.plot(np.argwhere(acc > 3), p_tot[acc > 3], linestyle='None', marker='x', color='red', alpha=0.5)
+
+        plt.title(f'p-values corrected ({self.winsize=})')
+        plt.tight_layout()
+        self.saver.save_fig(plt.gcf(), 'drift_detection_corrected')
+
+    def get_corrected(self):
+        pVal = np.array(list(self.p_values_dict.values())).mean(axis=0)
+        alpha_corrected = self.correct_alpha(correction='sidak')
+        return pVal, alpha_corrected

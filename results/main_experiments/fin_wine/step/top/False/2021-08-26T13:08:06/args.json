@@ -1,0 +1,42 @@
+{
+    "dataset": "fin_wine",
+    "drift_features": "top",
+    "drift_type": "step",
+    "drift_p": 0.25,
+    "dyn_update": false,
+    "drift_history": [
+        50
+    ],
+    "drift_th": [
+        10
+    ],
+    "preprocessing": "StandardScaler",
+    "batch_size": 32,
+    "epochs": 75,
+    "learning_rate": 0.001,
+    "hidden_activation": "nn.ReLU()",
+    "gradient_clip": -1,
+    "unconstrained": false,
+    "momentum": 0.9,
+    "normalization": "none",
+    "dropout": 0.25,
+    "l2penalty": 0.001,
+    "num_workers": 0,
+    "init_seed": 420,
+    "n_runs": 1,
+    "process": 1,
+    "neurons": [
+        100,
+        50,
+        20
+    ],
+    "classifier_dim": 20,
+    "embedding_size": 3,
+    "disable_print": false,
+    "plt_loss": true,
+    "plt_embedding": false,
+    "plt_loss_hist": true,
+    "plt_cm": true,
+    "plt_recons": true,
+    "headless": false
+}

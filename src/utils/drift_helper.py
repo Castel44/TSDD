@@ -1,15 +1,16 @@
 import os
 import shutil
-import pandas as pd
-import numpy as np
-from scipy.spatial.distance import cdist
-from skmultiflow.drift_detection import PageHinkley, KSWIN, EDDM, DDM, HDDM_W, HDDM_A
-from skmultiflow.drift_detection.adwin import ADWIN
-from src.utils.drift_detectors import DetectorZScores, DetectorIRQ, DetectorPmodified, DetectorEmbedding, DetectorEMA, \
-    DetectorSimple, ChiSquareDetector, KSDetector, MMDDetector, LSDDDetector
-from src.utils.concept_drift_detector import DriftDetector
-from src.utils.evaluate_drift import evaluate_continue_drift, evaluate_drift_sota, group, evaluate_single_drift
+
 import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from scipy.spatial.distance import cdist
+from skmultiflow.drift_detection import PageHinkley, KSWIN, EDDM, DDM
+from skmultiflow.drift_detection.adwin import ADWIN
+
+from src.utils.drift_detectors import DetectorZScores, DetectorIRQ, DetectorPmodified, DetectorEmbedding, DetectorEMA, \
+    DetectorSimple, ChiSquareDetector, KSDetector, MMDDetector, LSDDDetector, DriftDetector
+from src.utils.evaluate_drift import evaluate_single_drift
 
 columns = shutil.get_terminal_size().columns
 
@@ -117,7 +118,7 @@ def detection_helper(x_valid, x_test, valid_embedding, test_embedding, y_binary,
 
     results_obj = ResultsHandler(t_start)
     available_detectors = (
-        'ZScore', 'IRQ', 'P_modified', 'EMA', 'HDDDM_Emb', 'HDDDM_Input', 'IKS_Input', 'IKS_Emb', 'KS_Win_Emb',
+        'ZScore', 'IRQ', 'P_modified', 'EMA', 'HDDDM_Emb', 'HDDDM_Input', 'IKS_Input', 'IKS_emb_raw', 'IKS_emb',
         'KSWIN_Emb', 'PH_Emb', 'PH_error', 'DDM', 'EDDM', 'ADWIN', 'MMD_Input', 'MMD_Emb', 'Chi_Input',
         'Chi_Emb', 'LSD_Input', 'LSD_Emb', 'KS_Input', 'KS_Emb')
     if detectors_list is None:
@@ -173,8 +174,8 @@ def detection_helper(x_valid, x_test, valid_embedding, test_embedding, y_binary,
         results_obj.update(name, args.init_seed, counter_percent, detection_winsize, stat_winsize, idx_drift,
                            idx_warning)
 
-    ## Old Detector
-    name = 'KS_Win_Emb'
+    ## IKS on embedding extracted features
+    name = 'IKS_emb'
     if name in detectors_list:
         print("Detector: ", name)
         detector = DriftDetector(data_test=test_embedding, centroids=cluster_centers, data_train=valid_embedding,
@@ -219,7 +220,7 @@ def detection_helper(x_valid, x_test, valid_embedding, test_embedding, y_binary,
         results_obj.update(name, args.init_seed, counter_percent, detection_winsize, stat_winsize, idx_drift,
                            idx_warning)
 
-    detector = 'IKS_Emb'
+    detector = 'IKS_emb_raw'
     name = detector
     if name in detectors_list:
         print(f'Detector: {detector}')
@@ -385,13 +386,6 @@ def detection_helper(x_valid, x_test, valid_embedding, test_embedding, y_binary,
     return df_results, drift_idxs, warning_idxs, results_obj
 
 
-def temperature(x, th_high, alpha):
-    if x < 0:
-        return 0
-    else:
-        return max(0, 1 - (x / th_high) ** alpha)
-
-
 def postprocess_df(path_list, features, alpha=2, beta=1, gamma=10):
     def load_csv(path):
         features = path.split(sep='/')[-4]
@@ -417,26 +411,19 @@ def postprocess_df(path_list, features, alpha=2, beta=1, gamma=10):
     df.replace(datasets, [x.split(sep='_')[-1] for x in datasets], inplace=True)
     df['features'] = features
 
-    # a = df.query("name == 'HDDDM_Input' and constrained == False and features == 'top'").copy()
-    # a['constrained'] = True
-    # df.loc[(df.name == 'HDDDM_Input') & (df.constrained == True) & (df.features == 'top')] = a
-    # del a
-
     # Detection when delay is > 0
     df['detection'] = (df.drift_delay >= 0) & (df.drift_delay < df.detection_winsize.values * gamma)
 
     # Drift
     GE = np.abs(df.train_acc - df.valid_acc)
     df['real_drift'] = (df.drift_acc < (df.valid_acc - GE)) | (df.drift_acc > (df.valid_acc + GE))
-    # df['real_drift'] = (df.drift_acc < (df.valid_acc - 0.01)) | (df.drift_acc > (df.valid_acc + 0.01))
 
-    # df['real_drift'] = True
     df['delay'] = df['drift_delay'].clip(0)
 
     df['drift_detection_acc'] = (df['detection'] == df['real_drift']).astype(int)
 
     df['drift_acc_mod'] = (
-                df['drift_detection_acc'] - (df['delay'] / (df.detection_winsize.values * gamma)) ** alpha).clip(0)
+            df['drift_detection_acc'] - (df['delay'] / (df.detection_winsize.values * gamma)) ** alpha).clip(0)
     df.loc[df['real_drift'] == False, 'drift_acc_mod'] = df.loc[df['real_drift'] == False]['drift_detection_acc']
 
     df['drift_TNR'] = 1 - df['drift_FPR']
