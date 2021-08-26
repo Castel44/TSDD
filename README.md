@@ -1,5 +1,5 @@
 # Task-Sensitive Concept Drift Detector with Constraint Embedding
-This repository contains the implementation of the methods proposed in the paper [Task-Sensitive Concept Drift Detector with Constraint Embedding](https://arxiv.org/abs/2105.00349) by Andrea Castellani, Sebastian Schmitt and Barbara Hammer (submitted at SSCI 2021).
+This repository contains the implementation of the methods proposed in the paper [Task-Sensitive Concept Drift Detector with Constraint Embedding](https://arxiv.org/abs/2108.06980) by Andrea Castellani, Sebastian Schmitt and Barbara Hammer (submitted at SSCI 2021).
 
 <div align="center">
 <img src="images/architecture.png" width="70%">
