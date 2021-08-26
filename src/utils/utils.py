@@ -2,7 +2,7 @@ import argparse
 import argparse
 import os
 import shutil
-from time import time
+import time
 
 import numpy as np
 import pandas as pd
@@ -227,7 +227,7 @@ def eval_model(model, loader, criterion, latent_constraint):
             loss_class_ = criterion(out, target)
 
             if latent_constraint is not None:
-                embedding = model.get_embedding(data).squeeze()
+                embedding = model.get_embedding(inputs).squeeze()
                 loss_cntrs_ = latent_constraint(embedding.squeeze(), target)
                 loss = loss_class_.mean() + loss_cntrs_.mean()
             else:
@@ -257,9 +257,9 @@ def evaluate_model(model, dataloder, y_true, datatype='Train', network='model', 
     print(report)
 
     if plt_cm:
-        plt.plot_cm(confusion_matrix(y_true, yhat), network=network, title_str=f'{datatype}', saver=saver)
+        plt.plot_cm(confusion_matrix(y_true, y_hat_labels), network=network, title_str=f'{datatype}', saver=saver)
     if plt_pred:
-        plt.plot_pred_labels(y_true, yhat, accuracy, residuals=None, dataset=f'{datatype}', saver=saver)
+        plt.plot_pred_labels(y_true, y_hat_labels, accuracy, residuals=None, dataset=f'{datatype}', saver=saver)
 
     results_dict['acc'] = accuracy
     results_dict['f1_weighted'] = f1_weighted

@@ -19,6 +19,7 @@ import torch.nn as nn
 from sklearn.datasets import make_classification, make_blobs
 from sklearn.metrics import accuracy_score
 from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
 from torch.utils.data import DataLoader, TensorDataset
 
 from src.models.MLP import MetaMLP
@@ -56,26 +57,39 @@ def parse_args():
     parser = argparse.ArgumentParser(description='Concept drift detection experiments.'
                                                  'By default the constrained module is used.')
 
-    parser.add_argument('--dataset', type=str, default='fin_wine', help='available datasets + RBF + MovRBF')
+    parser.add_argument('--dataset', type=str, default='RBF', choices=(
+        'fin_adult', 'fin_wine', 'fin_bank', 'fin_digits08', 'fin_digits17', 'fin_musk', 'fin_phis', 'phishing', 'spam',
+        'RBF', 'MovRBF'))
+
+    # Synthetic data parameters
+    parser.add_argument('--features', type=int, default=20)
+    parser.add_argument('--classes', type=int, default=4)
+    parser.add_argument('--informative', type=int, default=10)
+    parser.add_argument('--redundant', type=int, default=0)
+
     parser.add_argument('--drift_features', type=str, default='top',
                         help='Which features to corrupt. Choices: top - bottom - list with features')
-    parser.add_argument('--drift_type', type=str, default='step', choices=('step', 'gradual'))
+    parser.add_argument('--drift_type', type=str, default='gradual', choices=('step', 'gradual'))
     parser.add_argument('--drift_p', type=float, default=0.25, help='Percentage of features to corrupt')
 
-    parser.add_argument('--dyn_update', action='store_true', default=False, help='Drift statistic dynamic update')
-    parser.add_argument('--drift_history', type=int, nargs='+', default=[50], help='Drift detection history size')
-    parser.add_argument('--drift_th', type=int, nargs='+', default=[10], help='Drift detection threshold')
+    parser.add_argument('--detectors', type=str, nargs='+',
+                        default=['ZScore', 'IRQ', 'P_modified', 'EMA', 'HDDDM_Emb', 'HDDDM_Input', 'IKS_emb',
+                                 'DDM', 'EDDM', 'ADWIN'],
+                        choices=(
+                            'ZScore', 'IRQ', 'P_modified', 'EMA', 'HDDDM_Emb', 'HDDDM_Input', 'IKS_Input',
+                            'IKS_emb_raw', 'IKS_emb', 'KSWIN_Emb', 'PH_Emb', 'PH_error', 'DDM', 'EDDM', 'ADWIN',
+                            'MMD_Input', 'MMD_Emb', 'Chi_Input', 'Chi_Emb', 'LSD_Input', 'LSD_Emb', 'KS_Input',
+                            'KS_Emb'), help='Available drift detectors')
 
-    parser.add_argument('--preprocessing', type=str, default='StandardScaler',
-                        help='Any available preprocessing method from sklearn.preprocessing')
+    parser.add_argument('--dyn_update', action='store_true', default=False, help='Drift statistic dynamic update')
+    parser.add_argument('--drift_history', type=int, nargs='+', default=[25, 50], help='Drift detection history size')
+    parser.add_argument('--drift_th', type=int, nargs='+', default=[10, 50], help='Drift detection threshold')
 
     parser.add_argument('--batch_size', type=int, default=32)
-    parser.add_argument('--epochs', type=int, default=75)
+    parser.add_argument('--epochs', type=int, default=50)
     parser.add_argument('--learning_rate', type=float, default=1e-3)
     parser.add_argument('--hidden_activation', type=str, default='nn.ReLU()')
-    parser.add_argument('--gradient_clip', type=float, default=-1)
-    parser.add_argument('--unconstrained', action='store_true', default=False,
-                        help='Not use constrained module')
+    parser.add_argument('--unconstrained', action='store_true', default=False, help='Not use constrained module')
 
     parser.add_argument('--momentum', type=float, default=0.9)
     parser.add_argument('--normalization', type=str, default='none')
@@ -106,101 +120,10 @@ def parse_args():
 
 
 ######################################################################################################
-def main():
-    args = parse_args()
-    print(args)
-    print()
-
-    ######################################################################################################
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-    SEED = args.init_seed
-    np.random.seed(SEED)
-    torch.manual_seed(SEED)
-    if device == 'cuda':
-        torch.cuda.manual_seed(SEED)
-
-    if args.headless:
-        print('Setting Headless support')
-        plt.switch_backend('Agg')
-    else:
-        backend = 'Qt5Agg'
-        print('Swtiching matplotlib backend to', backend)
-        plt.switch_backend(backend)
-    print()
-
-    ######################################################################################################
-    # LOG STUFF
-    # Declare saver object
-    saver = Saver(OUTPATH, os.path.basename(__file__).split(sep='.py')[0],
-                  hierarchy=os.path.join(args.dataset,
-                                         args.drift_type,
-                                         args.drift_features,
-                                         str(args.unconstrained)))
-
-    # Save json of args/parameters
-    with open(os.path.join(saver.path, 'args.json'), 'w') as fp:
-        json.dump(vars(args), fp, indent=4)
-
-    ######################################################################################################
-    # Main loop
-    csv_path = os.path.join(saver.path, '{}_{}_results.csv'.format(args.dataset, args.drift_features))
-
-    seeds_list = list(np.random.choice(1000, args.n_runs, replace=False))
-    seeds_list = check_ziplen(seeds_list, args.process)
-    total_run = args.n_runs
-
-    iterator = zip(*[seeds_list[j::args.process] for j in range(args.process)])
-    total_iter = len(list(iterator))
-
-    torch.multiprocessing.set_start_method('spawn', force=True)
-    start_datetime = datetime.now()
-    print('{} - Start Experiments. {} parallel process. Single GPU. \r\n'.format(
-        start_datetime.strftime("%d/%m/%Y %H:%M:%S"), args.process))
-    for i, (x) in enumerate(zip(*[seeds_list[j::args.process] for j in range(args.process)])):
-        start_time = time.time()
-    x = remove_duplicates(x)
-    n_process = len(x)
-    idxs = [i * args.process + j for j in range(1, n_process + 1)]
-    print('/' * shutil.get_terminal_size().columns)
-    print(
-        'ITERATION: {}/{}'.format(idxs, total_run).center(columns))
-    print('/' * shutil.get_terminal_size().columns)
-
-    process = []
-    for j in range(n_process):
-        process.append(mp.Process(target=run, args=(x[j], copy.deepcopy(args), saver.path, csv_path)))
-
-    for p in process:
-        p.start()
-
-    for p in process:
-        p.join()
-
-    end_time = time.time()
-    iter_seconds = end_time - start_time
-    total_seconds = end_time - start_datetime.timestamp()
-    print('Iteration time: {} - ETA: {}'.format(time.strftime("%Mm:%Ss", time.gmtime(iter_seconds)),
-                                                time.strftime('%Hh:%Mm:%Ss',
-                                                              time.gmtime(
-                                                                  total_seconds * (total_iter / (i + 1) - 1)))))
-    print()
-
-    print('*' * shutil.get_terminal_size().columns)
-    print('DONE!')
-    end_datetime = datetime.now()
-    total_seconds = (end_datetime - start_datetime).total_seconds()
-    print('{} - Experiment took: {}'.format(end_datetime.strftime("%d/%m/%Y %H:%M:%S"),
-                                            time.strftime("%Hh:%Mm:%Ss", time.gmtime(total_seconds))))
-    print(f'results dataframe saved in: {csv_path}')
-
-
 def load_corrupt_data(args):
     # Loading data
     if args.dataset == 'MovRBF':
         # Blobs dataset with drift induced by moving centroids
-        args.learning_rate = 1e-2
-
         X, y, centers = make_blobs(n_samples=2000, n_features=args.features, centers=args.classes, cluster_std=1.0,
                                    return_centers=True)
         x_test_, Y_test_, centers_end = make_blobs(n_samples=1000, n_features=args.features, centers=args.classes,
@@ -225,11 +148,25 @@ def load_corrupt_data(args):
 
         x_train, x_valid, Y_train, Y_valid = train_test_split(X, y, shuffle=True, test_size=0.2)
 
+        # Data Scaling
+        normalizer = StandardScaler()
+        x_train = normalizer.fit_transform(x_train)
+        x_valid = normalizer.transform(x_valid)
+        x_test = normalizer.transform(x_test)
+
+        # Encode labels
+        unique_train = np.unique(Y_train)
+        label_encoder = dict(zip(unique_train, range(len(unique_train))))
+        unique_test = np.setdiff1d(np.unique(y), unique_train)
+        label_encoder.update(dict(zip(unique_test, range(len(unique_train), len(np.unique(y))))))
+
+        Y_train = np.array([label_encoder.get(e, e) for e in Y_train])
+        Y_valid = np.array([label_encoder.get(e, e) for e in Y_valid])
+        Y_test = np.array([label_encoder.get(e, e) for e in Y_test])
+
     else:
         # RBF or UCI datasets with drift induced by corrupting the features
         if args.dataset == 'RBF':
-            args.learning_rate = 1e-2
-
             # Loading data
             X, y = make_classification(n_samples=2000, n_features=args.features, n_informative=args.informative,
                                        n_redundant=args.redundant, n_repeated=0, n_classes=args.classes,
@@ -237,12 +174,27 @@ def load_corrupt_data(args):
                                        shift=0.0, scale=1.0, shuffle=True, random_state=args.init_seed)
         else:
             # UCI datasets
-            args.learning_rate = 1e-3
-
             X, y = load_data(args.dataset)
 
         x_train, x_test, Y_train, Y_test = train_test_split(X, y, shuffle=False, train_size=0.6)
         x_train, x_valid, Y_train, Y_valid = train_test_split(x_train, Y_train, shuffle=False, test_size=0.2)
+
+        # scale data before corruption!!!
+        # Data Scaling
+        normalizer = StandardScaler()
+        x_train = normalizer.fit_transform(x_train)
+        x_valid = normalizer.transform(x_valid)
+        x_test = normalizer.transform(x_test)
+
+        # Encode labels
+        unique_train = np.unique(Y_train)
+        label_encoder = dict(zip(unique_train, range(len(unique_train))))
+        unique_test = np.setdiff1d(np.unique(y), unique_train)
+        label_encoder.update(dict(zip(unique_test, range(len(unique_train), len(np.unique(y))))))
+
+        Y_train = np.array([label_encoder.get(e, e) for e in Y_train])
+        Y_valid = np.array([label_encoder.get(e, e) for e in Y_valid])
+        Y_test = np.array([label_encoder.get(e, e) for e in Y_test])
 
         # Induce Drift
         test_samples = len(x_test)
@@ -257,21 +209,7 @@ def load_corrupt_data(args):
             t_end = t_start + int(0.20 * test_samples)
             # t_end = t_start
             x_test, permute_dict = corrupt_drift(x_test, y=Y_test, t_start=t_start, t_end=t_end, p=args.drift_p,
-                                                 features=args.drift_features, loc=1., std=1.0, copy=False)
-
-    # Data Scaling
-    normalizer = eval(args.preprocessing)()
-    x_train = normalizer.fit_transform(x_train)
-    x_valid = normalizer.transform(x_valid)
-
-    # Encode labels
-    unique_train = np.unique(Y_train)
-    label_encoder = dict(zip(unique_train, range(len(unique_train))))
-    unique_test = np.setdiff1d(np.unique(y), unique_train)
-    label_encoder.update(dict(zip(unique_test, range(len(unique_train), len(np.unique(y))))))
-
-    Y_train = np.array([label_encoder.get(e, e) for e in Y_train])
-    Y_valid = np.array([label_encoder.get(e, e) for e in Y_valid])
+                                                 features=args.drift_features, loc=1.0, std=1.0, copy=False)
 
     classes = len(np.unique(Y_train))
     print('Num Classes: ', classes)
@@ -284,6 +222,7 @@ def load_corrupt_data(args):
     return x_train, Y_train, x_valid, Y_valid, x_test, Y_test, t_start, t_end
 
 
+######################################################################################################
 def single_experiment(args, path):
     path = os.path.join(path, 'seed_{}'.format(args.init_seed))
     saver = SaverSlave(path)
@@ -397,7 +336,6 @@ def single_experiment(args, path):
     else:
         print('Skipping embedding plot')
 
-
     ######################################################################################################
     # Begin Drift detection part
     ######################################################################################################
@@ -447,7 +385,7 @@ def single_experiment(args, path):
                                                                          test_embedding, y_binary, running_accuracy,
                                                                          cluster_centers,
                                                                          saver, d, c, t_start, t_end, args,
-                                                                         detectors_list=detectors)
+                                                                         detectors_list=args.detectors)
 
             if d * c * 0.01 <= 1:
                 skip_flag = True
@@ -473,4 +411,95 @@ def single_experiment(args, path):
 
 
 if __name__ == '__main__':
-    main()
+    args = parse_args()
+    print(args)
+    print()
+
+    ######################################################################################################
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    SEED = args.init_seed
+    np.random.seed(SEED)
+    torch.manual_seed(SEED)
+    if device == 'cuda':
+        torch.cuda.manual_seed(SEED)
+
+    if args.headless:
+        print('Setting Headless support')
+        plt.switch_backend('Agg')
+    else:
+        backend = 'Qt5Agg'
+        print('Swtiching matplotlib backend to', backend)
+        plt.switch_backend(backend)
+    print()
+
+    ######################################################################################################
+    # LOG STUFF
+    # Declare saver object
+    if args.dataset == 'MovRBF':
+        saver = Saver(OUTPATH, os.path.basename(__file__).split(sep='.py')[0],
+                      hierarchy=os.path.join(args.dataset,
+                                             args.drift_type,
+                                             str(not args.unconstrained)))
+    else:
+        saver = Saver(OUTPATH, os.path.basename(__file__).split(sep='.py')[0],
+                      hierarchy=os.path.join(args.dataset,
+                                             args.drift_type,
+                                             args.drift_features,
+                                             str(not args.unconstrained)))
+
+    # Save json of args/parameters
+    with open(os.path.join(saver.path, 'args.json'), 'w') as fp:
+        json.dump(vars(args), fp, indent=4)
+
+    ######################################################################################################
+    # Main loop
+    csv_path = os.path.join(saver.path, '{}_{}_results.csv'.format(args.dataset, args.drift_features))
+
+    seeds_list = list(np.random.choice(1000, args.n_runs, replace=False))
+    seeds_list = check_ziplen(seeds_list, args.process)
+    total_run = args.n_runs
+
+    iterator = zip(*[seeds_list[j::args.process] for j in range(args.process)])
+    total_iter = len(list(iterator))
+
+    torch.multiprocessing.set_start_method('spawn', force=True)
+    start_datetime = datetime.now()
+    print('{} - Start Experiments. {} parallel process. Single GPU. \r\n'.format(
+        start_datetime.strftime("%d/%m/%Y %H:%M:%S"), args.process))
+    for i, (x) in enumerate(zip(*[seeds_list[j::args.process] for j in range(args.process)])):
+        start_time = time.time()
+    x = remove_duplicates(x)
+    n_process = len(x)
+    idxs = [i * args.process + j for j in range(1, n_process + 1)]
+    print('/' * shutil.get_terminal_size().columns)
+    print(
+        'ITERATION: {}/{}'.format(idxs, total_run).center(columns))
+    print('/' * shutil.get_terminal_size().columns)
+
+    process = []
+    for j in range(n_process):
+        process.append(mp.Process(target=run, args=(x[j], copy.deepcopy(args), saver.path, csv_path)))
+
+    for p in process:
+        p.start()
+
+    for p in process:
+        p.join()
+
+    end_time = time.time()
+    iter_seconds = end_time - start_time
+    total_seconds = end_time - start_datetime.timestamp()
+    print('Iteration time: {} - ETA: {}'.format(time.strftime("%Mm:%Ss", time.gmtime(iter_seconds)),
+                                                time.strftime('%Hh:%Mm:%Ss',
+                                                              time.gmtime(
+                                                                  total_seconds * (total_iter / (i + 1) - 1)))))
+    print()
+
+    print('*' * shutil.get_terminal_size().columns)
+    print('DONE!')
+    end_datetime = datetime.now()
+    total_seconds = (end_datetime - start_datetime).total_seconds()
+    print('{} - Experiment took: {}'.format(end_datetime.strftime("%d/%m/%Y %H:%M:%S"),
+                                            time.strftime("%Hh:%Mm:%Ss", time.gmtime(total_seconds))))
+    print(f'results dataframe saved in: {csv_path}')

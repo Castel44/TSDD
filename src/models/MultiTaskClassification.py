@@ -1,10 +1,4 @@
-import copy
-import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.nn.utils import weight_norm
-
-import numpy as np
 
 
 class MetaModel(nn.Module):
@@ -61,4 +55,3 @@ class LinClassifier(nn.Module):
     def forward(self, x):
         out = self.dense(x)
         return out
-

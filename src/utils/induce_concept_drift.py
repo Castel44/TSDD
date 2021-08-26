@@ -1,9 +1,5 @@
-import os
-import pandas as pd
 import numpy as np
 from sklearn.feature_selection import SelectKBest
-
-from src.utils.global_var import DATAPATH
 
 
 def feature_importance(x, y):
@@ -107,6 +103,7 @@ def corrupt_drift(x, y=None, t_start=0, t_end=None, p=0.25, features='top', loc=
 
     scale = np.linspace(0, std, transient)
     # mean = np.linspace(0, loc, transient)
+    x = x.astype('float64')
 
     if copy:
         x2 = x.copy()

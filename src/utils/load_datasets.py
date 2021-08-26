@@ -1,9 +1,9 @@
 import os
-import subprocess
 
 import pandas as pd
 
 from src.utils.global_var import DATAPATH
+
 
 # Available datasets
 def check_datasets(path: str):

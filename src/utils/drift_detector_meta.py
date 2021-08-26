@@ -1,8 +1,7 @@
 from collections import deque
-import numpy as np
-from scipy.stats import kstest, mannwhitneyu
 
 import matplotlib.pyplot as plt
+import numpy as np
 
 
 class BaseDetector:

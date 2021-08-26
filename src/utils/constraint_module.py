@@ -3,6 +3,7 @@ import torch.nn as nn
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+
 def reduce_loss(loss, reduction='mean'):
     return loss.mean() if reduction == 'mean' else loss.sum() if reduction == 'sum' else loss
 
